@@ -1,0 +1,883 @@
+### ============================================================
+### E-commerce API — Full Flow Test (IntelliJ HTTP Client)
+###
+### Uses IntelliJ's response-handler script syntax
+### ( > {% client.global.set("name", value); %} )
+### to chain tokens/IDs between requests — NOT the
+### {{requestName.response.body.$.field}} syntax, which
+### IntelliJ's HTTP Client does not support.
+###
+### Setup: this file expects an environment named "dev" (see
+### http-client.env.json) providing {{baseUrl}}. Select it from
+### the environment dropdown in the top-right of this editor
+### before running anything.
+###
+### Run requests TOP TO BOTTOM — later ones depend on global
+### variables set by earlier ones via client.global.set().
+### ============================================================
+
+@customerEmail = customer1@test.com
+@customerPassword = password123
+@customer2Email = customer2@test.com
+@customer2Password = password123
+@adminEmail = admin@test.com
+@adminPassword = adminpass123
+
+### ------------------------------------------------------------
+### ⚠️ ADMIN SETUP — READ FIRST
+### ------------------------------------------------------------
+### There is no public API endpoint to assign ADMIN role directly.
+### /auth/register always assigns ROLE_CUSTOMER.
+### To test admin requests:
+###   1. Run request 1.3 ("Register admin user") below once.
+###   2. Promote that user in MySQL:
+###        UPDATE users SET role = 'ROLE_ADMIN' WHERE email = 'admin@test.com';
+###   3. Run request 1.7 ("Login as admin") to get a JWT token
+###      carrying the real ROLE_ADMIN claim.
+### ------------------------------------------------------------
+
+
+### ============================================================
+### 0. HEALTH CHECK
+### ============================================================
+
+### 0.1 Health check — expect 200, public
+GET {{baseUrl}}/health
+
+> {%
+    client.test("Health check returned 200", function() {
+        client.assert(response.status === 200, "Response status is not 200");
+    });
+%}
+
+
+### ============================================================
+### 1. AUTHENTICATION & FULL TOKEN LIFECYCLE
+### ============================================================
+
+### 1.1 Register customer 1 — captures customer1Token & customer1RefreshToken
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test Customer One",
+  "email": "{{customerEmail}}",
+  "password": "{{customerPassword}}",
+  "phone": "9990001111",
+  "address": "123 Test Street"
+}
+
+> {%
+    if (response.body.accessToken) {
+        client.global.set("customer1Token", response.body.accessToken);
+        client.global.set("customer1RefreshToken", response.body.refreshToken);
+    }
+    client.test("Customer 1 registration status", function() {
+        client.assert(response.status === 200 || response.status === 201, "Expected 200/201 on register");
+    });
+%}
+
+### 1.2 Register customer 2 (used for IDOR / ownership & logout testing)
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test Customer Two",
+  "email": "{{customer2Email}}",
+  "password": "{{customer2Password}}",
+  "phone": "9990002222",
+  "address": "456 Test Avenue"
+}
+
+> {%
+    if (response.body.accessToken) {
+        client.global.set("customer2Token", response.body.accessToken);
+        client.global.set("customer2RefreshToken", response.body.refreshToken);
+    }
+%}
+
+### 1.3 Register admin user
+### ⚠️ After this succeeds, run: UPDATE users SET role = 'ROLE_ADMIN' WHERE email = 'admin@test.com';
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test Admin",
+  "email": "{{adminEmail}}",
+  "password": "{{adminPassword}}",
+  "phone": "9990003333",
+  "address": "789 Admin Blvd"
+}
+
+### 1.4 Register with a duplicate email — expect 409 Conflict
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Duplicate Attempt",
+  "email": "{{customerEmail}}",
+  "password": "somepassword",
+  "phone": "0000000000",
+  "address": "N/A"
+}
+
+> {%
+    client.test("Duplicate registration returns 409", function() {
+        client.assert(response.status === 409, "Expected 409 Conflict");
+    });
+%}
+
+### 1.5 Login as customer 1 — updates customer1Token & customer1RefreshToken
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}",
+  "password": "{{customerPassword}}"
+}
+
+> {%
+    client.global.set("customer1Token", response.body.accessToken);
+    client.global.set("customer1RefreshToken", response.body.refreshToken);
+    client.test("Login customer1 succeeded", function() {
+        client.assert(response.status === 200, "Expected 200, got " + response.status);
+        client.assert(response.body.accessToken, "accessToken missing");
+        client.assert(response.body.refreshToken, "refreshToken missing");
+    });
+%}
+
+### 1.6 Login as customer 2 — updates customer2Token & customer2RefreshToken
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{customer2Email}}",
+  "password": "{{customer2Password}}"
+}
+
+> {%
+    client.global.set("customer2Token", response.body.accessToken);
+    client.global.set("customer2RefreshToken", response.body.refreshToken);
+%}
+
+### 1.7 Login as admin — captures adminToken & adminRefreshToken
+### (Run AFTER setting role='ROLE_ADMIN' in DB)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{adminEmail}}",
+  "password": "{{adminPassword}}"
+}
+
+> {%
+    client.global.set("adminToken", response.body.accessToken);
+    client.global.set("adminRefreshToken", response.body.refreshToken);
+    client.test("Admin login succeeded", function() {
+        client.assert(response.status === 200, "Expected 200, got " + response.status);
+        client.assert(response.body.accessToken, "accessToken missing");
+    });
+%}
+
+### 1.8 Refresh Token Rotation — exchange customer1RefreshToken for new token pair
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{customer1RefreshToken}}"
+}
+
+> {%
+    client.test("Refresh token rotated successfully", function() {
+        client.assert(response.status === 200, "Expected 200 on refresh");
+        client.assert(response.body.accessToken, "New accessToken missing");
+        client.assert(response.body.refreshToken, "New refreshToken missing");
+    });
+    // Save newly rotated tokens
+    client.global.set("customer1Token", response.body.accessToken);
+    client.global.set("customer1OldRefreshToken", client.global.get("customer1RefreshToken"));
+    client.global.set("customer1RefreshToken", response.body.refreshToken);
+%}
+
+### 1.9 Re-use Old (Rotated) Refresh Token — expect 400 / 401 Bad Request
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{customer1OldRefreshToken}}"
+}
+
+> {%
+    client.test("Re-used refresh token rejected", function() {
+        client.assert(response.status === 400 || response.status === 401, "Expected 400 or 401 on reused token");
+    });
+%}
+
+### 1.10 Server-Side Logout — Revoke customer 2's refresh token
+POST {{baseUrl}}/auth/logout
+Content-Type: application/json
+
+{
+  "refreshToken": "{{customer2RefreshToken}}"
+}
+
+> {%
+    client.test("Logout succeeded", function() {
+        client.assert(response.status === 200, "Expected 200 on logout");
+    });
+%}
+
+### 1.11 Try to Refresh with Revoked Token (Customer 2) — expect 400 / 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{customer2RefreshToken}}"
+}
+
+> {%
+    client.test("Revoked refresh token rejected", function() {
+        client.assert(response.status === 400 || response.status === 401, "Expected 400/401 on revoked token");
+    });
+%}
+
+### 1.12 Re-authenticate Customer 2 (to restore active customer2Token for later tests)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{customer2Email}}",
+  "password": "{{customer2Password}}"
+}
+
+> {%
+    client.global.set("customer2Token", response.body.accessToken);
+    client.global.set("customer2RefreshToken", response.body.refreshToken);
+%}
+
+### 1.13 Login with invalid password — expect 401 Unauthorized
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}",
+  "password": "wrong-password-here"
+}
+
+> {%
+    client.test("Wrong credentials rejected with 401", function() {
+        client.assert(response.status === 401, "Expected 401 Unauthorized");
+    });
+%}
+
+### 1.14 Resend Email Verification OTP (Phase 9)
+POST {{baseUrl}}/auth/resend-otp
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}",
+  "type": "EMAIL_VERIFICATION"
+}
+
+> {%
+    client.test("Resend verification OTP returned 200", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+    });
+%}
+
+### 1.15 Verify Email with Invalid OTP — expect 400 Bad Request
+POST {{baseUrl}}/auth/verify-email
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}",
+  "otp": "000000"
+}
+
+> {%
+    client.test("Invalid OTP rejected with 400", function() {
+        client.assert(response.status === 400, "Expected 400 Bad Request");
+    });
+%}
+
+### 1.16 Request Password Reset OTP (Phase 9)
+POST {{baseUrl}}/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}"
+}
+
+> {%
+    client.test("Forgot password returned 200", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+    });
+%}
+
+### 1.17 Reset Password with Invalid OTP — expect 400 Bad Request
+POST {{baseUrl}}/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "{{customerEmail}}",
+  "otp": "000000",
+  "newPassword": "newSecretPassword123"
+}
+
+> {%
+    client.test("Invalid reset OTP rejected with 400", function() {
+        client.assert(response.status === 400, "Expected 400 Bad Request");
+    });
+%}
+
+
+### ============================================================
+### 2. SECURITY & AUTHORIZATION ACCESS CHECKS
+### ============================================================
+
+### 2.1 Access protected cart without token — expect 401 Unauthorized
+GET {{baseUrl}}/cart
+
+> {%
+    client.test("Unauthenticated request blocked with 401", function() {
+        client.assert(response.status === 401, "Expected 401 Unauthorized");
+    });
+%}
+
+### 2.2 Customer tries to create product (Admin only) — expect 403 Forbidden
+POST {{baseUrl}}/products
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "name": "Unauthorized Product",
+  "description": "Customer shouldn't be allowed to create products",
+  "price": 99.00,
+  "stockQuantity": 5,
+  "categoryId": 1
+}
+
+> {%
+    client.test("Customer creation blocked with 403", function() {
+        client.assert(response.status === 403, "Expected 403 Forbidden");
+    });
+%}
+
+### 2.3 Customer tries to view admin orders endpoint — expect 403 Forbidden
+GET {{baseUrl}}/admin/orders
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.test("Customer accessing admin orders blocked with 403", function() {
+        client.assert(response.status === 403, "Expected 403 Forbidden");
+    });
+%}
+
+
+### ============================================================
+### 3. CATEGORIES — PUBLIC READ
+### ============================================================
+
+### 3.1 List categories (Public) — expect 200
+GET {{baseUrl}}/categories
+
+> {%
+    client.test("Categories list returned 200", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+    });
+%}
+
+
+### ============================================================
+### 4. ADMIN — CATEGORY & PRODUCT MANAGEMENT
+### ============================================================
+
+### 4.1 Create category as Admin — captures categoryId
+POST {{baseUrl}}/categories
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "Peripherals & Accessories",
+  "description": "Keyboards, mice, headsets, and computer accessories"
+}
+
+> {%
+    client.global.set("categoryId", response.body.id);
+    client.test("Category created successfully", function() {
+        client.assert(response.status === 200 || response.status === 201, "Expected 200/201");
+        client.assert(response.body.id, "Category ID missing");
+    });
+%}
+
+### 4.2 Create duplicate category name — expect 409 Conflict
+POST {{baseUrl}}/categories
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "Peripherals & Accessories",
+  "description": "Duplicate category attempt"
+}
+
+> {%
+    client.test("Duplicate category rejected with 409", function() {
+        client.assert(response.status === 409, "Expected 409 Conflict");
+    });
+%}
+
+### 4.3 Create main product as Admin — captures productId
+POST {{baseUrl}}/products
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "Pro Ergonomic Wireless Mouse",
+  "description": "High precision wireless mouse with rechargeable battery",
+  "price": 1499.00,
+  "stockQuantity": 15,
+  "categoryId": {{categoryId}},
+  "imageUrls": ["https://images.unsplash.com/photo-1527864550417-7fd91fc51a46"]
+}
+
+> {%
+    client.global.set("productId", response.body.id);
+    client.test("Product created successfully", function() {
+        client.assert(response.status === 200 || response.status === 201, "Expected 200/201");
+        client.assert(response.body.id, "Product ID missing");
+    });
+%}
+
+### 4.4 Create low-stock product — captures lowStockProductId (for stock limit testing)
+POST {{baseUrl}}/products
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "Mechanical Gaming Keyboard RGB",
+  "description": "Compact mechanical keyboard with blue switches (Limited Edition)",
+  "price": 3499.00,
+  "stockQuantity": 2,
+  "categoryId": {{categoryId}}
+}
+
+> {%
+    client.global.set("lowStockProductId", response.body.id);
+    client.test("Low stock product created", function() {
+        client.assert(response.body.id, "Low stock product ID missing");
+    });
+%}
+
+### 4.5 Update product details as Admin
+PUT {{baseUrl}}/products/{{productId}}
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "Pro Ergonomic Wireless Mouse (V2)",
+  "description": "Upgraded precision optical sensor and silent clicks",
+  "price": 1299.00,
+  "stockQuantity": 15,
+  "categoryId": {{categoryId}}
+}
+
+> {%
+    client.test("Product updated successfully", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.name.includes("V2"), "Product name did not update");
+    });
+%}
+
+
+### 4.6 Upload standalone image to Cloudinary (Admin only)
+POST {{baseUrl}}/files/upload
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="mouse.png"
+Content-Type: image/png
+
+< ./src/main/resources/application.properties
+--boundary--
+
+> {%
+    client.test("File upload endpoint reached", function() {
+        // Will return 200 with imageUrl if Cloudinary credentials configured, or 400/500 if unconfigured
+        client.assert(response.status === 200 || response.status === 400 || response.status === 500);
+    });
+%}
+
+### 4.7 Upload product image by Product ID (Admin only)
+POST {{baseUrl}}/products/{{productId}}/images
+Authorization: Bearer {{adminToken}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="mouse.jpg"
+Content-Type: image/jpeg
+
+< ./src/main/resources/application.properties
+--boundary--
+
+### 4.8 Delete product image by URL (Admin only)
+DELETE {{baseUrl}}/products/{{productId}}/images?imageUrl=https://res.cloudinary.com/demo/image/upload/sample.jpg
+Authorization: Bearer {{adminToken}}
+
+
+### ============================================================
+### 5. PRODUCTS — PUBLIC READ, SEARCH & FILTER
+### ============================================================
+
+### 5.1 List products (paginated)
+GET {{baseUrl}}/products?page=0&size=10
+
+### 5.2 Get single product by ID
+GET {{baseUrl}}/products/{{productId}}
+
+### 5.3 Search products by keyword
+GET {{baseUrl}}/products?search=Mouse
+
+### 5.4 Filter products by category
+GET {{baseUrl}}/products?categoryId={{categoryId}}
+
+### 5.5 Filter products by price range
+GET {{baseUrl}}/products?minPrice=1000&maxPrice=2000
+
+### 5.6 Filter only in-stock products
+GET {{baseUrl}}/products?onlyAvailable=true
+
+### 5.7 Get non-existent product — expect 404 Not Found
+GET {{baseUrl}}/products/9999999
+
+> {%
+    client.test("Nonexistent product returns 404", function() {
+        client.assert(response.status === 404, "Expected 404 Not Found");
+    });
+%}
+
+
+### ============================================================
+### 6. CART OPERATIONS (Customer 1)
+### ============================================================
+
+### 6.1 View initial cart (should be empty)
+GET {{baseUrl}}/cart
+Authorization: Bearer {{customer1Token}}
+
+### 6.2 Add main product to cart — captures cartItemId
+POST {{baseUrl}}/cart/items
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{productId}},
+  "quantity": 2
+}
+
+> {%
+    client.test("Product added to cart", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.items.length > 0, "Cart items array is empty");
+    });
+    client.global.set("cartItemId", response.body.items[0].id);
+%}
+
+### 6.3 Try to add quantity exceeding available stock — expect 400 Bad Request
+POST {{baseUrl}}/cart/items
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{lowStockProductId}},
+  "quantity": 999
+}
+
+> {%
+    client.test("Excessive quantity rejected with 400", function() {
+        client.assert(response.status === 400, "Expected 400 Bad Request");
+    });
+%}
+
+### 6.4 Add valid quantity of low-stock product
+POST {{baseUrl}}/cart/items
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{lowStockProductId}},
+  "quantity": 1
+}
+
+### 6.5 View populated cart with items and total calculation
+GET {{baseUrl}}/cart
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.test("Cart total calculation verified", function() {
+        client.assert(response.body.items.length === 2, "Expected 2 cart items");
+        client.assert(response.body.totalAmount > 0, "Total amount should be positive");
+    });
+%}
+
+### 6.6 Update cart item quantity
+PUT {{baseUrl}}/cart/items/{{cartItemId}}
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "quantity": 3
+}
+
+### 6.7 Cross-User Cart Isolation: Customer 2 tries modifying Customer 1's cart item — expect 404
+PUT {{baseUrl}}/cart/items/{{cartItemId}}
+Content-Type: application/json
+Authorization: Bearer {{customer2Token}}
+
+{
+  "quantity": 1
+}
+
+> {%
+    client.test("Cross-user cart manipulation blocked", function() {
+        client.assert(response.status === 404 || response.status === 403, "Expected 404 or 403 on foreign cart item");
+    });
+%}
+
+
+### ============================================================
+### 7. ORDERS & CHECKOUT (Customer 1)
+### ============================================================
+
+### 7.1 Place order from current cart — captures orderId
+POST {{baseUrl}}/orders
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.global.set("orderId", response.body.id);
+    client.test("Order placed successfully with snapshot lines", function() {
+        client.assert(response.status === 200 || response.status === 201, "Expected 200/201");
+        client.assert(response.body.id, "Order ID missing");
+        client.assert(response.body.status === "PLACED", "Initial status should be PLACED");
+        client.assert(response.body.items.length > 0, "Order items missing");
+    });
+%}
+
+### 7.2 Try placing another order immediately (Cart is now empty) — expect 400 Bad Request
+POST {{baseUrl}}/orders
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.test("Checkout on empty cart rejected with 400", function() {
+        client.assert(response.status === 400, "Expected 400 Empty Cart Error");
+    });
+%}
+
+### 7.3 View customer order history (paginated)
+GET {{baseUrl}}/orders?page=0&size=10
+Authorization: Bearer {{customer1Token}}
+
+### 7.4 View specific order by ID (Owner)
+GET {{baseUrl}}/orders/{{orderId}}
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.test("Owner can view own order", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.id === client.global.get("orderId"), "Order ID mismatch");
+    });
+%}
+
+### 7.5 🔒 IDOR Security Check: Customer 2 tries accessing Customer 1's Order — expect 404
+GET {{baseUrl}}/orders/{{orderId}}
+Authorization: Bearer {{customer2Token}}
+
+> {%
+    client.test("IDOR access blocked for foreign order", function() {
+        client.assert(response.status === 404 || response.status === 403, "Expected 404/403 for unauthorized order access");
+    });
+%}
+
+
+### ============================================================
+### 8. ADMIN — ORDER MANAGEMENT & STATE MACHINE
+### ============================================================
+
+### 8.1 Admin views all customer orders
+GET {{baseUrl}}/admin/orders?page=0&size=20
+Authorization: Bearer {{adminToken}}
+
+### 8.2 Admin filters orders by PLACED status
+GET {{baseUrl}}/admin/orders?status=PLACED
+Authorization: Bearer {{adminToken}}
+
+### 8.3 State Machine Step 1: PLACED → CONFIRMED (Valid Transition)
+PUT {{baseUrl}}/admin/orders/{{orderId}}/status?newStatus=CONFIRMED
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("Status transition to CONFIRMED succeeded", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.status === "CONFIRMED", "Expected CONFIRMED status");
+    });
+%}
+
+### 8.4 State Machine Step 2: Invalid Jump (CONFIRMED → DELIVERED without SHIPPED) — expect 409 Conflict
+PUT {{baseUrl}}/admin/orders/{{orderId}}/status?newStatus=DELIVERED
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("Illegal status jump rejected with 409", function() {
+        client.assert(response.status === 409, "Expected 409 Conflict on invalid state jump");
+    });
+%}
+
+### 8.5 State Machine Step 3: CONFIRMED → SHIPPED (Valid Transition)
+PUT {{baseUrl}}/admin/orders/{{orderId}}/status?newStatus=SHIPPED
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("Status transition to SHIPPED succeeded", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.status === "SHIPPED", "Expected SHIPPED status");
+    });
+%}
+
+### 8.6 State Machine Step 4: SHIPPED → DELIVERED (Valid Final Transition)
+PUT {{baseUrl}}/admin/orders/{{orderId}}/status?newStatus=DELIVERED
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("Status transition to DELIVERED succeeded", function() {
+        client.assert(response.status === 200, "Expected 200 OK");
+        client.assert(response.body.status === "DELIVERED", "Expected DELIVERED status");
+    });
+%}
+
+
+### ============================================================
+### 9. REVIEWS & RATINGS (Customer 1)
+### ============================================================
+
+### 9.1 Add review for purchased product
+POST {{baseUrl}}/reviews
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{productId}},
+  "rating": 5,
+  "comment": "Outstanding mouse! Ergonomics and precision are top notch."
+}
+
+> {%
+    client.test("Review created successfully", function() {
+        client.assert(response.status === 200 || response.status === 201, "Expected 200/201");
+        client.assert(response.body.rating === 5, "Expected rating 5");
+    });
+%}
+
+### 9.2 Duplicate Review Attempt on same product by same user — expect 409 Conflict
+POST {{baseUrl}}/reviews
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{productId}},
+  "rating": 4,
+  "comment": "Attempting second review on same product"
+}
+
+> {%
+    client.test("Duplicate review rejected with 409", function() {
+        client.assert(response.status === 409, "Expected 409 Conflict for duplicate review");
+    });
+%}
+
+### 9.3 Customer 2 tries reviewing product they NEVER ordered — expect 400 Bad Request
+POST {{baseUrl}}/reviews
+Content-Type: application/json
+Authorization: Bearer {{customer2Token}}
+
+{
+  "productId": {{productId}},
+  "rating": 5,
+  "comment": "I have not purchased this product"
+}
+
+> {%
+    client.test("Reviewing unpurchased product rejected with 400", function() {
+        client.assert(response.status === 400, "Expected 400 Bad Request");
+    });
+%}
+
+### 9.4 View reviews list for product (Public)
+GET {{baseUrl}}/products/{{productId}}/reviews
+
+### 9.5 Confirm calculated averageRating is updated on Product
+GET {{baseUrl}}/products/{{productId}}
+
+> {%
+    client.test("Product average rating updated live", function() {
+        client.assert(response.body.averageRating === 5.0 || response.body.averageRating === 5, "Expected average rating of 5.0");
+    });
+%}
+
+
+### ============================================================
+### 10. CART CLEANUP & ITEM REMOVAL
+### ============================================================
+
+### 10.1 Add item to test explicit item removal — captures removalItemId
+POST {{baseUrl}}/cart/items
+Content-Type: application/json
+Authorization: Bearer {{customer1Token}}
+
+{
+  "productId": {{productId}},
+  "quantity": 1
+}
+
+> {%
+    client.global.set("removalItemId", response.body.items[response.body.items.length - 1].id);
+%}
+
+### 10.2 Delete cart item
+DELETE {{baseUrl}}/cart/items/{{removalItemId}}
+Authorization: Bearer {{customer1Token}}
+
+> {%
+    client.test("Cart item removed", function() {
+        client.assert(response.status === 200 || response.status === 204, "Expected 200/204 on delete item");
+    });
+%}
+
+### 10.3 Verify cart is empty again
+GET {{baseUrl}}/cart
+Authorization: Bearer {{customer1Token}}
+
+
+### ============================================================
+### 11. ADMIN CLEANUP (Optional)
+### ============================================================
+
+### 11.1 Delete low-stock test product
+DELETE {{baseUrl}}/products/{{lowStockProductId}}
+Authorization: Bearer {{adminToken}}
+
+### 11.2 Delete main test product
+DELETE {{baseUrl}}/products/{{productId}}
+Authorization: Bearer {{adminToken}}
+
+### 11.3 Delete test category
+DELETE {{baseUrl}}/categories/{{categoryId}}
+Authorization: Bearer {{adminToken}}
+
+### 11.4 Confirm deleted category returns 404
+GET {{baseUrl}}/categories/{{categoryId}}
+
+> {%
+    client.test("Deleted category returns 404", function() {
+        client.assert(response.status === 404, "Expected 404 Not Found");
+    });
+%}

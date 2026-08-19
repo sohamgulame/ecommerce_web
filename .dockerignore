@@ -1,0 +1,31 @@
+# =========================================================================
+# Root .dockerignore — Exclude build context from Docker image builds
+# =========================================================================
+
+# Build Outputs & Package Cache
+target/
+!.mvn/wrapper/maven-wrapper.jar
+frontend/dist/
+frontend/node_modules/
+dist/
+node_modules/
+
+# Secrets & Local Configurations
+.env
+.env.*
+!.env.example
+*.env
+*.private.env.json
+
+# Git & IDE Files
+.git
+.gitignore
+.dockerignore
+.idea
+*.iml
+.vscode
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
