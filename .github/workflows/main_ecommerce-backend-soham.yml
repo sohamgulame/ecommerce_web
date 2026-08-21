@@ -33,7 +33,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'ecommerce-backend-soham'
+          app-name: 'ecommerce-backend-soham-cbaga8a9b6a8avh8'
           slot-name: 'Production'
           package: '${{ github.workspace }}/target/app.jar'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_FBD177859C5E4CE1AB8A1C8E83F3CD82 }}
