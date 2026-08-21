@@ -35,5 +35,5 @@ jobs:
         with:
           app-name: 'ecommerce-backend-'
           slot-name: 'Production'
-          package: '${{ github.workspace }}/target/*.jar'
+          package: '${{ github.workspace }}/target/app.jar'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_E8D207F73AE346CF89A32CD4FFDEA28A }}
