@@ -25,13 +25,16 @@ public class DataInitializer implements CommandLineRunner {
     private final CategoryRepository categoryRepository;
     private final ProductRepository productRepository;
     private final com.Project1.project.repository.UserRepository userRepository;
+    private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
 
     public DataInitializer(CategoryRepository categoryRepository,
                            ProductRepository productRepository,
-                           com.Project1.project.repository.UserRepository userRepository) {
+                           com.Project1.project.repository.UserRepository userRepository,
+                           org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
         this.categoryRepository = categoryRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
@@ -39,7 +42,19 @@ public class DataInitializer implements CommandLineRunner {
     public void run(String... args) {
         log.info("Checking and synchronizing multi-category catalog products & image URLs...");
 
-        // Ensure all seeded/existing accounts have emailVerified = true in dev
+        // Ensure default admin user exists
+        if (userRepository.findByEmail("admin@ecommerce.com").isEmpty()) {
+            com.Project1.project.entity.User admin = new com.Project1.project.entity.User();
+            admin.setName("Admin User");
+            admin.setEmail("admin@ecommerce.com");
+            admin.setPassword(passwordEncoder.encode("Admin123!"));
+            admin.setRole(com.Project1.project.entity.Role.ROLE_ADMIN);
+            admin.setEmailVerified(true);
+            userRepository.save(admin);
+            log.info("Created default administrator account: admin@ecommerce.com");
+        }
+
+        // Ensure all seeded/existing accounts have emailVerified = true
         userRepository.findAll().forEach(u -> {
             if (!u.isEmailVerified()) {
                 u.setEmailVerified(true);
