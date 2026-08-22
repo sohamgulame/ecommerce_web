@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     user_id BIGINT NOT NULL,
     rating INT NOT NULL,
     comment VARCHAR(2000),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_review_product_user UNIQUE (product_id, user_id),
     CONSTRAINT fk_reviews_product FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE,
     CONSTRAINT fk_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
@@ -106,7 +107,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     token_hash VARCHAR(255) NOT NULL UNIQUE,
     user_id BIGINT NOT NULL,
-    expiry_date TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
     revoked BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_refresh_tokens_user (user_id),
@@ -120,7 +121,7 @@ CREATE TABLE IF NOT EXISTS otp_verifications (
     otp_hash VARCHAR(255) NOT NULL,
     type VARCHAR(50) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
-    verified BOOLEAN NOT NULL DEFAULT FALSE,
+    used BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_otp_email_type (email, type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
