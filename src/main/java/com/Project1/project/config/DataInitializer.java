@@ -27,17 +27,23 @@ public class DataInitializer implements CommandLineRunner {
     private final com.Project1.project.repository.UserRepository userRepository;
     private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
     private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    private final String adminEmail;
+    private final String adminPassword;
 
     public DataInitializer(CategoryRepository categoryRepository,
                            ProductRepository productRepository,
                            com.Project1.project.repository.UserRepository userRepository,
                            org.springframework.security.crypto.password.PasswordEncoder passwordEncoder,
-                           org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
+                           org.springframework.jdbc.core.JdbcTemplate jdbcTemplate,
+                           @org.springframework.beans.factory.annotation.Value("${app.admin.email:admin@ecommerce.com}") String adminEmail,
+                           @org.springframework.beans.factory.annotation.Value("${app.admin.password:Admin123!}") String adminPassword) {
         this.categoryRepository = categoryRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jdbcTemplate = jdbcTemplate;
+        this.adminEmail = adminEmail != null ? adminEmail.trim().toLowerCase() : "admin@ecommerce.com";
+        this.adminPassword = adminPassword != null ? adminPassword : "Admin123!";
     }
 
     @Override
@@ -59,17 +65,27 @@ public class DataInitializer implements CommandLineRunner {
 
         log.info("Checking and synchronizing multi-category catalog products & image URLs...");
 
-        // Ensure default admin user exists
-        if (userRepository.findByEmail("admin@ecommerce.com").isEmpty()) {
-            com.Project1.project.entity.User admin = new com.Project1.project.entity.User();
-            admin.setName("Admin User");
-            admin.setEmail("admin@ecommerce.com");
-            admin.setPassword(passwordEncoder.encode("Admin123!"));
-            admin.setRole(com.Project1.project.entity.Role.ROLE_ADMIN);
-            admin.setEmailVerified(true);
-            userRepository.save(admin);
-            log.info("Created default administrator account: admin@ecommerce.com");
-        }
+        // Ensure configured administrator account exists or is promoted
+        userRepository.findByEmail(adminEmail).ifPresentOrElse(
+                user -> {
+                    if (user.getRole() != com.Project1.project.entity.Role.ROLE_ADMIN || !user.isEmailVerified()) {
+                        user.setRole(com.Project1.project.entity.Role.ROLE_ADMIN);
+                        user.setEmailVerified(true);
+                        userRepository.save(user);
+                        log.info("Ensured user '{}' has ROLE_ADMIN and verified status", adminEmail);
+                    }
+                },
+                () -> {
+                    com.Project1.project.entity.User admin = new com.Project1.project.entity.User();
+                    admin.setName("Administrator");
+                    admin.setEmail(adminEmail);
+                    admin.setPassword(passwordEncoder.encode(adminPassword));
+                    admin.setRole(com.Project1.project.entity.Role.ROLE_ADMIN);
+                    admin.setEmailVerified(true);
+                    userRepository.save(admin);
+                    log.info("Created administrator account: {}", adminEmail);
+                }
+        );
 
         // Ensure all seeded/existing accounts have emailVerified = true
         userRepository.findAll().forEach(u -> {
