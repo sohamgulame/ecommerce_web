@@ -26,20 +26,37 @@ public class DataInitializer implements CommandLineRunner {
     private final ProductRepository productRepository;
     private final com.Project1.project.repository.UserRepository userRepository;
     private final org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     public DataInitializer(CategoryRepository categoryRepository,
                            ProductRepository productRepository,
                            com.Project1.project.repository.UserRepository userRepository,
-                           org.springframework.security.crypto.password.PasswordEncoder passwordEncoder) {
+                           org.springframework.security.crypto.password.PasswordEncoder passwordEncoder,
+                           org.springframework.jdbc.core.JdbcTemplate jdbcTemplate) {
         this.categoryRepository = categoryRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Override
     @Transactional
     public void run(String... args) {
+        // Clean up legacy columns from initial database creation
+        try {
+            jdbcTemplate.execute("ALTER TABLE refresh_tokens DROP COLUMN expiry_date");
+            log.info("Cleaned up legacy 'expiry_date' column in refresh_tokens table");
+        } catch (Exception ex) {
+            log.debug("Legacy column 'expiry_date' not present or already removed");
+        }
+        try {
+            jdbcTemplate.execute("ALTER TABLE otp_verifications DROP COLUMN verified");
+            log.info("Cleaned up legacy 'verified' column in otp_verifications table");
+        } catch (Exception ex) {
+            log.debug("Legacy column 'verified' not present or already removed");
+        }
+
         log.info("Checking and synchronizing multi-category catalog products & image URLs...");
 
         // Ensure default admin user exists
