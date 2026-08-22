@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS products (
 
 -- 4. Product Images collection table
 CREATE TABLE IF NOT EXISTS product_images (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
     product_id BIGINT NOT NULL,
     image_url VARCHAR(255),
     INDEX idx_product_images_product (product_id),
